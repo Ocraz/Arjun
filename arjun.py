@@ -4,8 +4,8 @@ from __future__ import print_function
 
 from core.colors import green, white, end, info, bad, good, run
 
-print('''%s    _
-   /_| _ '
+print('''%s    _         
+   /_| _ '    
   (  |/ /(//) v1.6
       _/      %s
 ''' % (green, end))
@@ -20,7 +20,7 @@ import re
 import json
 import time
 import argparse
-
+import sys
 import core.config
 from core.prompt import prompt
 from core.requester import requester
@@ -40,7 +40,12 @@ parser.add_argument('--headers', help='add headers', dest='headers', nargs='?', 
 parser.add_argument('--json', help='treat post data as json', dest='jsonData', action='store_true')
 parser.add_argument('--stable', help='prefer stability over speed', dest='stable', action='store_true')
 parser.add_argument('--include', help='include this data in every request', dest='include', default={})
+parser.add_argument('--urlsout', help='output urls found to file', dest='urlsout') # Added by ZZ
 args = parser.parse_args() # arguments to be parsed
+
+# Added by ZZ:
+if args.urlsout:
+    fUrlsOut = open(args.urlsout, 'w', buffering=1)
 
 url = args.url
 delay = args.delay
@@ -81,7 +86,7 @@ include = getParams(include)
 
 paramList = []
 try:
-    with open(wordlist, 'r', encoding="utf8") as file:
+    with open(wordlist, 'r') as file:
         for line in file:
             paramList.append(line.strip('\n'))
 except FileNotFoundError:
@@ -92,7 +97,7 @@ urls = []
 
 if url_file:
     try:
-        with open(url_file, 'r', encoding="utf8") as file:
+        with open(url_file, 'r') as file:
             for line in file:
                 urls.append(line.strip('\n'))
     except FileNotFoundError:
@@ -109,18 +114,19 @@ def heuristic(response, paramList):
     for form in forms:
         method = re.search(r'(?i)method=[\'"](.*?)[\'"]', form)
         inputs = re.findall(r'(?i)(?s)<input.*?>', response)
-        if inputs != None and method != None:
-            for inp in inputs:
-                inpName = re.search(r'(?i)name=[\'"](.*?)[\'"]', inp)
-                if inpName:
-                    inpName = d(e(inpName.group(1)))
-                    if inpName not in done:
-                        if inpName in paramList:
-                            paramList.remove(inpName)
-                        done.append(inpName)
-                        paramList.insert(0, inpName)
-                        print('%s Heuristic found a potential %s parameter: %s%s%s' % (good, method.group(1), green, inpName, end))
-                        print('%s Prioritizing it' % info)
+        for inp in inputs:
+            inpName = re.search(r'(?i)name=[\'"](.*?)[\'"]', inp)
+            if inpName:
+                inpName = d(e(inpName.group(1)))
+                if inpName not in done:
+                    if inpName in paramList:
+                        paramList.remove(inpName)
+                    done.append(inpName)
+                    print('%s Heuristic found a potential %s parameter: %s%s%s' % (good, method.group(1), green, inpName, end))
+                    print('%s Prioritizing it' % info)
+                    # Added by ZZ:
+                    if args.urlsout:
+                        fUrlsOut.write(url + "/?" + inpName.strip() + "=1\n")
     emptyJSvars = re.finditer(r'var\s+([^=]+)\s*=\s*[\'"`][\'"`]', response)
     for each in emptyJSvars:
         inpName = each.group(1)
@@ -128,10 +134,16 @@ def heuristic(response, paramList):
         paramList.insert(0, inpName)
         print('%s Heuristic found a potential parameter: %s%s%s' % (good, green, inpName, end))
         print('%s Prioritizing it' % info)
+        # Added by ZZ:
+        if args.urlsout:
+            fUrlsOut.write(url + "/?" + inpName.strip() + "=1\n") 
 
 def quickBruter(params, originalResponse, originalCode, reflections, factors, include, delay, headers, url, GET):
     joined = joiner(params, include)
-    newResponse = requester(url, joined, headers, GET, delay)
+    try:
+    	newResponse = requester(url, joined, headers, GET, delay)
+    except:
+        pass
     if newResponse.status_code == 429:
         if core.config.globalVariables['stable']:
             print('%s Hit rate limit, stabilizing the connection..')
@@ -224,6 +236,9 @@ def initialize(url, include, headers, GET, delay, paramList, threadCount):
 
         for each in foundParams:
             print('%s Valid parameter found: %s%s%s' % (good, green, each, end))
+            # Added by ZZ:
+            if args.urlsout:
+                fUrlsOut.write(url + "/?" + each.strip() + "=1\n")
         if not foundParams:
             print('%s Unable to verify existence of parameters detected by heuristic.' % bad)
         return foundParams
@@ -238,6 +253,8 @@ try:
         except ConnectionError:
             print('%s Target has rate limiting in place, please use --stable switch.' % bad)
             quit()
+        except:
+            pass
     elif urls:
         for url in urls:
             finalResult[url] = []
@@ -246,9 +263,25 @@ try:
                 finalResult[url] = initialize(url, include, headers, GET, delay, list(paramList), threadCount)
                 if finalResult[url]:
                     print('%s Parameters found: %s' % (good, ', '.join(finalResult[url])))
+                    # Added by ZZ:
+                    if args.urlsout and len(finalResult[url]) > 1:
+                        iCounter = 0
+                        sNewUrl = url
+                        for sParam in finalResult[url]:
+                            if iCounter == 0:
+                                sNewUrl += "/?" + sParam.strip() + "=1"
+                                iCounter = 1
+                            else:
+                                sNewUrl += "&" + sParam.strip() + "=1"
+                        fUrlsOut.write(sNewUrl + "\n") 
             except ConnectionError:
                 print('%s Target has rate limiting in place, please use --stable switch.' % bad)
                 pass
+            # Added try/except (ZZ)
+            except:
+                sys.stderr.write('ERROR: %sn' % str(err))
+                pass
+
 except KeyboardInterrupt:
     print('%s Exiting..                ' % bad)
     quit()
@@ -256,5 +289,5 @@ except KeyboardInterrupt:
 # Finally, export to json
 if args.output_file and finalResult:
     print('%s Saving output to JSON file in %s' % (info, args.output_file))
-    with open(str(args.output_file), 'w+', encoding="utf8") as json_output:
+    with open(str(args.output_file), 'w+') as json_output:
         json.dump(finalResult, json_output, sort_keys=True, indent=4)
